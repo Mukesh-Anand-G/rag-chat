@@ -5,15 +5,17 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from sentence_transformers import SentenceTransformer
 import qdrant_client
+from qdrant_client.http.models import Filter, PointIdsList  # Import for Qdrant delete
 from langchain_community.llms import Ollama
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 import os
 import uuid
 import logging
+from urllib.parse import unquote
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -82,6 +84,7 @@ class User(BaseModel):
 # Define ChatRequest model
 class ChatRequest(BaseModel):
     query: str
+    selected_documents: List[str]  # List of selected document filenames
 
 # Function to extract text from files
 def extract_text(file: UploadFile):
@@ -200,20 +203,29 @@ async def upload_file(file: UploadFile = File(...), current_user: dict = Depends
 async def chat(request: ChatRequest):
     try:
         query = request.query
-        logger.info(f"Received query: {query}")
+        selected_documents = request.selected_documents
+        logger.info(f"Received query: {query} with selected documents: {selected_documents}")
 
         # Generate embedding for the query
         query_embedding = embedding_model.encode([query])[0]
 
-        # Search Qdrant for relevant chunks
+        # Search Qdrant for relevant chunks within selected documents
         search_results = client.search(
             collection_name=COLLECTION_NAME,
             query_vector=query_embedding.tolist(),
             limit=5,
+            query_filter={
+                "must": [
+                    {"key": "filename", "match": {"any": selected_documents}}
+                ]
+            } if selected_documents else None
         )
 
         # Extract relevant text chunks
         relevant_chunks = [result.payload["text"] for result in search_results]
+
+        if not relevant_chunks:
+            return JSONResponse({"response": "I don't know."})
 
         # Generate response using Ollama
         prompt_template = PromptTemplate(
@@ -227,6 +239,60 @@ async def chat(request: ChatRequest):
         return JSONResponse({"response": response})
     except Exception as e:
         logger.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Delete endpoint
+@app.delete("/delete/{filename}")
+async def delete_file(filename: str, current_user: dict = Depends(require_admin)):
+    try:
+        # Decode the filename to handle URL encoding (e.g., %20 for spaces)
+        decoded_filename = unquote(filename)
+        file_path = os.path.join(UPLOAD_DIR, decoded_filename)
+        logger.info(f"Attempting to delete file: {file_path}")
+
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Delete the file from the filesystem
+        os.remove(file_path)
+        logger.info(f"File '{decoded_filename}' deleted from filesystem.")
+
+        # Delete embeddings from Qdrant
+        logger.info(f"Deleting embeddings for file '{decoded_filename}' from Qdrant.")
+
+        # Create a filter to match the filename
+        filename_filter = Filter(
+            must=[
+                {"key": "filename", "match": {"value": decoded_filename}}
+            ]
+        )
+
+        # Search for points matching the filter
+        search_results = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=filename_filter,
+            with_vectors=False,
+            with_payload=True,
+            limit=1000  # Adjust limit as needed
+        )
+
+        # Extract point IDs from search results
+        point_ids = [point.id for point in search_results[0]]
+
+        if point_ids:
+            # Delete points by their IDs
+            client.delete(
+                collection_name=COLLECTION_NAME,
+                points_selector=PointIdsList(points=point_ids)
+            )
+            logger.info(f"Deleted {len(point_ids)} embeddings for file '{decoded_filename}' from Qdrant.")
+        else:
+            logger.info(f"No embeddings found for file '{decoded_filename}' in Qdrant.")
+
+        return {"message": f"File '{decoded_filename}' and its embeddings deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting file '{decoded_filename}': {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Run the FastAPI app
