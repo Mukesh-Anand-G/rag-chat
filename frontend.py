@@ -57,17 +57,30 @@ def login_signup_page():
 def main_app():
     st.title("AI-Powered Chatbot")
 
+    # List uploaded documents
+    try:
+        uploaded_files = os.listdir("uploads")
+        if uploaded_files:
+            st.header("Select Documents")
+            selected_documents = st.multiselect("Choose documents", uploaded_files)
+        else:
+            st.warning("No documents have been uploaded yet.")
+            selected_documents = []
+    except FileNotFoundError:
+        st.warning("No documents have been uploaded yet.")
+        selected_documents = []
+
     # Chat section
     st.header("Chat with the Document")
     query = st.text_input("Ask a question about the document:")
     if query:
         try:
-            # Send the query as a JSON payload
-            payload = {"query": query}
+            # Send the query and selected documents as a JSON payload
+            payload = {"query": query, "selected_documents": selected_documents}
             logger.info(f"Sending payload: {payload}")
             response = requests.post(
                 f"{BACKEND_URL}/chat",
-                json=payload,  # Use json=payload to send JSON data
+                json=payload,
                 headers={"Authorization": f"Bearer {st.session_state['token']}"},
             )
             logger.info(f"Backend response: {response.status_code}, {response.text}")
@@ -113,12 +126,14 @@ def main_app():
             if uploaded_files:
                 for filename in uploaded_files:
                     if st.button(f"Delete {filename}"):
+                        # Encode the filename for the URL
+                        encoded_filename = requests.utils.quote(filename)
                         response = requests.delete(
-                            f"{BACKEND_URL}/delete/{filename}",
+                            f"{BACKEND_URL}/delete/{encoded_filename}",
                             headers={"Authorization": f"Bearer {st.session_state['token']}"},
                         )
                         if response.status_code == 200:
-                            st.success(f"File '{filename}' deleted successfully!")
+                            st.success(f"File '{filename}' and its embeddings deleted successfully!")
                         else:
                             error_message = response.json().get("detail", "Unknown error")
                             st.error(f"Error: {error_message}")
