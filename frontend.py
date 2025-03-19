@@ -61,8 +61,8 @@ def main_app():
     try:
         uploaded_files = os.listdir("uploads")
         if uploaded_files:
-            st.header("Select Documents")
-            selected_documents = st.multiselect("Choose documents", uploaded_files)
+            st.header("Select Category / Topic")
+            selected_documents = st.multiselect("Choose Topics", uploaded_files)
         else:
             st.warning("No documents have been uploaded yet.")
             selected_documents = []
@@ -71,8 +71,8 @@ def main_app():
         selected_documents = []
 
     # Chat section
-    st.header("Chat with the Document")
-    query = st.text_input("Ask a question about the document:")
+    st.header("Ask the CongniSearch - Gen-AI powered search tool")
+    query = st.text_input("Ask any questions related to the internal Documents:")
     if query:
         try:
             # Send the query and selected documents as a JSON payload
@@ -154,5 +154,5 @@ else:
         st.session_state.clear()
 
 # Display logs in the Streamlit app
-st.header("Application Logs")
+# st.header("Application Logs")
 st.text(log_stream.getvalue())
